@@ -1,0 +1,12 @@
+{
+  "name": "chargebee-webhook",
+  "version": "1.0.0",
+  "description": "Webhook handler",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.18.1"
+  }
+}
