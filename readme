@@ -1,0 +1,219 @@
+# Chargebee Webhook — Auto-Promote Payment Source to Primary
+
+A lightweight Node.js server that listens for Chargebee's `payment_source_added`
+webhook event and automatically promotes the newly added payment method to Primary.
+
+---
+
+## What This Does
+
+```
+Customer adds a new card in Chargebee
+          ↓
+Chargebee fires a webhook → payment_source_added
+          ↓
+This server receives the webhook
+          ↓
+Calls Chargebee API → Assign Payment Role → role: primary
+          ↓
+New card is now the Primary payment method ✓
+```
+
+---
+
+## Prerequisites
+
+| Requirement | Version | Download |
+|-------------|---------|----------|
+| Node.js | v18 or higher | [nodejs.org](https://nodejs.org) |
+| ngrok account | Free tier | [ngrok.com](https://ngrok.com) |
+| Chargebee test site | Any | [chargebee.com](https://chargebee.com) |
+
+---
+
+## Project Structure
+
+```
+chargebee-webhook/
+├── index.js        → the main server (all the logic lives here)
+├── package.json    → project metadata + dependencies
+└── node_modules/   → auto-generated after npm install (don't edit this)
+```
+
+---
+
+## Setup & Running Locally
+
+### Step 1 — Clone or download this project
+
+If you have the files already, skip this. Otherwise:
+
+```bash
+git clone https://github.com/YOUR_USERNAME/chargebee-webhook.git
+cd chargebee-webhook
+```
+
+### Step 2 — Install dependencies
+
+```bash
+npm install
+```
+
+This installs `express` and `axios` (listed in package.json).
+A `node_modules/` folder will appear — that's normal.
+
+### Step 3 — Start the server
+
+```bash
+node index.js
+```
+
+You should see:
+```
+Chargebee webhook listener running on port 3000
+```
+
+Leave this terminal running.
+
+### Step 4 — Expose your local server with ngrok
+
+Open a **second terminal** and run:
+
+```bash
+npx ngrok http 3000
+```
+
+You'll see a public URL like:
+```
+Forwarding   https://abc123.ngrok-free.app → http://localhost:3000
+```
+
+Copy that `https://` URL — you'll need it in the next step.
+
+> **First time using ngrok?** You need a free account.
+> Run this once after signing up:
+> ```bash
+> npx ngrok config add-authtoken YOUR_TOKEN_HERE
+> ```
+> Get your token at [dashboard.ngrok.com/get-started/your-authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
+
+### Step 5 — Register the webhook in Chargebee
+
+1. Log into your Chargebee test site
+2. Go to **Settings → Configure Chargebee → API Keys & Webhooks → Webhooks**
+3. Click **Add Webhook**
+4. Fill in:
+   - **Webhook Name**: `auto-promote-primary`
+   - **Webhook URL**: `https://abc123.ngrok-free.app/webhook` ← your ngrok URL + `/webhook`
+   - **API Version**: `V2`
+   - **Events**: enable `payment_source_added`
+5. Click **Create**
+
+### Step 6 — Test it
+
+Add a card to any customer in your Chargebee test site.
+
+In your first terminal, you should see:
+```
+[2026-07-22T15:20:00.197Z] Event received: payment_source_added
+  Customer : cus_xxxxx
+  Source   : pm_xxxxx (card)
+  → Assigning PRIMARY role to source pm_xxxxx for customer cus_xxxxx
+  ✓ Done — pm_xxxxx is now Primary.
+```
+
+---
+
+## Configuration
+
+The server reads credentials from environment variables.
+If not set, it falls back to the defaults hardcoded in `index.js`.
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `CHARGEBEE_SITE` | Your Chargebee subdomain only | `lathuworld25-test` |
+| `CHARGEBEE_API_KEY` | Your Chargebee API key (test or live) | `test_xxxxxxxxxxxx` |
+| `PORT` | Port the server listens on | `3000` (default) |
+
+### Setting environment variables (recommended for security)
+
+```bash
+export CHARGEBEE_SITE="lathuworld25-test"
+export CHARGEBEE_API_KEY="test_xxxxxxxxxxxx"
+node index.js
+```
+
+> ⚠️ **Important:** Set `CHARGEBEE_SITE` to just the subdomain.
+> Do NOT include `.chargebee.com` — the code adds that automatically.
+>
+> ✅ `lathuworld25-test`
+> ❌ `lathuworld25-test.chargebee.com`
+
+---
+
+## How to Stop the Server
+
+- In Terminal 1 (node server) → press `Ctrl + C`
+- In Terminal 2 (ngrok) → press `Ctrl + C`
+
+---
+
+## Stopping & Restarting
+
+Every time you restart ngrok, you get a **new public URL**.
+You'll need to update the webhook URL in Chargebee each time.
+
+To avoid this, you can:
+- Get a fixed ngrok domain (ngrok free tier includes one static domain)
+- Or deploy to a cloud service (Render, Railway, Fly.io — all have free tiers)
+
+---
+
+## Common Errors & Fixes
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `Cannot find module 'express'` | Dependencies not installed | Run `npm install` |
+| `fetch failed` | Wrong site name format | Make sure `CHARGEBEE_SITE` has no `.chargebee.com` |
+| `Hostname does not match certificate` | `CHARGEBEE_SITE` env var has full domain | Run `unset CHARGEBEE_SITE` then restart |
+| `authentication failed` (ngrok) | No ngrok account linked | Run `npx ngrok config add-authtoken YOUR_TOKEN` |
+| No response in terminal | Webhook URL not saved correctly in Chargebee | Check the URL ends with `/webhook` |
+
+---
+
+## Next Step — Add the Expired Card Guard
+
+Once this basic flow is working, you can make it smarter:
+only promote the new card if the **current Primary is expired or invalid**.
+
+Add this block inside the `payment_source_added` handler in `index.js`,
+right before the `assignPrimaryRole()` call:
+
+```javascript
+// Fetch the customer's current primary source
+const customerData = await chargebeeRequest(`/customers/${customerId}`);
+const primarySourceId = customerData.customer?.primary_payment_source_id;
+
+if (primarySourceId) {
+  const sourceData = await chargebeeRequest(`/payment_sources/${primarySourceId}`);
+  const existing = sourceData.payment_source;
+
+  const isExpired =
+    existing?.status === "expired" ||
+    existing?.status === "invalid" ||
+    existing?.deleted === true;
+
+  if (!isExpired) {
+    console.log("  → Current Primary is still valid. Skipping promotion.");
+    return res.status(200).json({ status: "skipped", reason: "primary_still_valid" });
+  }
+}
+```
+
+---
+
+## API Reference
+
+- [Assign Payment Role API](https://apidocs.chargebee.com/docs/api/customers?prod_cat_ver=2#assign_payment_role_for_a_customer)
+- [payment_source_added event](https://apidocs.chargebee.com/docs/api/events#payment_source_added)
+- [Payment Sources API](https://apidocs.chargebee.com/docs/api/payment_sources)
